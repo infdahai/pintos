@@ -1,6 +1,8 @@
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
+#include "devices/timer.h"
+#include "fixed_point.h"
 #include "synch.h"
 #include <debug.h>
 #include <list.h>
@@ -97,6 +99,9 @@ struct thread
   int base_priority;
   struct list lockhold_lists;
   struct lock *waiting_lock;
+
+  int nice;
+  fix_point recent_cpu;
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */

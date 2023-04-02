@@ -1,4 +1,5 @@
 #include "threads/thread.h"
+#include "fixed_point.h"
 #include "thread.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
@@ -59,6 +60,7 @@ static unsigned thread_ticks; /**< # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
+static fix_point load_avg;
 
 static void kernel_thread (thread_func *, void *aux);
 
@@ -71,7 +73,9 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
-
+static void mlfqs_update_priority (struct thread *t, void *aux UNUSED);
+static void mlfqs_update_cpu (struct thread *t, void *aux UNUSED);
+static void mlfqs_update_avg (void);
 /** Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -111,6 +115,7 @@ thread_start (void)
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
 
+  load_avg = 0;
   /* Start preemptive thread scheduling. */
   intr_enable ();
 
@@ -134,6 +139,24 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
+
+  if (thread_mlfqs)
+    {
+      int64_t ticks = timer_ticks ();
+      if (t != idle_thread)
+        {
+          t->recent_cpu = fix_add (t->recent_cpu, 1);
+        }
+      if (ticks % TIME_SLICE == 0)
+        {
+          thread_foreach (mlfqs_update_priority, NULL);
+        }
+      if (ticks % TIMER_FREQ == 0)
+        {
+          mlfqs_update_avg ();
+          thread_foreach (mlfqs_update_cpu, NULL);
+        }
+    }
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -369,31 +392,30 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice UNUSED)
 {
-  /* Not yet implemented. */
+  thread_current ()->nice = nice;
+  mlfqs_update_priority (thread_current (), NULL);
+  thread_yield ();
 }
 
 /** Returns the current thread's nice value. */
 int
 thread_get_nice (void)
 {
-  /* Not yet implemented. */
-  return 0;
+  return thread_current ()->nice;
 }
 
 /** Returns 100 times the system load average. */
 int
 thread_get_load_avg (void)
 {
-  /* Not yet implemented. */
-  return 0;
+  return ftoi_near (fix_mul (load_avg, itof (100)));
 }
 
 /** Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void)
 {
-  /* Not yet implemented. */
-  return 0;
+  return ftoi_near (fix_mul (thread_current ()->recent_cpu, itof (100)));
 }
 
 /** Idle thread.  Executes when no other thread is ready to run.
@@ -482,9 +504,18 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *)t + PGSIZE;
   t->priority = priority;
-  t->base_priority = priority;
-  t->waiting_lock = NULL;
-  list_init (&t->lockhold_lists);
+  if (!thread_mlfqs)
+    {
+      t->base_priority = priority;
+      t->waiting_lock = NULL;
+      list_init (&t->lockhold_lists);
+    }
+  else
+    {
+      t->nice = 0;
+      t->recent_cpu = 0;
+    }
+
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
@@ -608,6 +639,42 @@ thread_priority_greater (const struct list_elem *a, const struct list_elem *b,
 {
   return list_entry (a, struct thread, elem)->priority
          > list_entry (b, struct thread, elem)->priority;
+}
+
+static void
+mlfqs_update_priority (struct thread *t, void *aux UNUSED)
+{
+  if (t != idle_thread)
+    {
+      t->priority = PRI_MAX - ftoi_near (t->recent_cpu / 4) - 2 * t->nice;
+
+      t->priority = (t->priority > PRI_MAX) ? PRI_MAX : t->priority;
+      t->priority = (t->priority < PRI_MIN) ? PRI_MIN : t->priority;
+    }
+}
+
+static void
+mlfqs_update_cpu (struct thread *t, void *aux UNUSED)
+{
+  if (t != idle_thread)
+    {
+      t->recent_cpu
+          = itof (t->nice)
+            + fix_mul (fix_div (2 * load_avg, 2 * load_avg + itof (1)),
+                       t->recent_cpu);
+    }
+}
+
+static void
+mlfqs_update_avg (void)
+{
+  fix_point coef = fix_div (itof (59), itof (60));
+  int ready_length = list_size (&ready_list);
+  if (thread_current () != idle_thread)
+    {
+      ready_length++;
+    }
+  load_avg = fix_mul (coef, load_avg) + itof (ready_length) / 60;
 }
 
 /** Offset of `stack' member within `struct thread'.
