@@ -1,4 +1,5 @@
 #include "threads/thread.h"
+#include "thread.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -70,9 +71,6 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
-static bool thread_priority_greater (const struct list_elem *a,
-                                     const struct list_elem *b,
-                                     void *aux UNUSED);
 
 /** Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -203,7 +201,10 @@ thread_create (const char *name, int priority, thread_func *function,
 
   /* Add to run queue. */
   thread_unblock (t);
-
+  if (priority > thread_current ()->priority)
+    {
+      thread_yield ();
+    }
   return tid;
 }
 
@@ -336,11 +337,25 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
-/** Sets the current thread's priority to NEW_PRIORITY. */
+/** Sets the current thread's priority to NEW_PRIORITY.
+ * if new priority < old priority, then thread_yield
+ */
 void
 thread_set_priority (int new_priority)
 {
-  thread_current ()->priority = new_priority;
+  struct thread *cur_t = thread_current ();
+  int old_priority = cur_t->priority;
+  cur_t->base_priority = new_priority;
+
+  if (list_empty (&cur_t->lockhold_lists) || new_priority > cur_t->priority)
+    {
+      cur_t->priority = new_priority;
+    }
+
+  if (cur_t->priority < old_priority)
+    {
+      thread_yield ();
+    }
 }
 
 /** Returns the current thread's priority. */
@@ -467,6 +482,9 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *)t + PGSIZE;
   t->priority = priority;
+  t->base_priority = priority;
+  t->waiting_lock = NULL;
+  list_init (&t->lockhold_lists);
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
@@ -584,7 +602,7 @@ allocate_tid (void)
   return tid;
 }
 
-static bool
+bool
 thread_priority_greater (const struct list_elem *a, const struct list_elem *b,
                          void *aux UNUSED)
 {

@@ -217,6 +217,10 @@ sleep_tick (void)
         {
           (void)list_remove (e);
           thread_unblock (entry->t);
+          if (entry->t->priority > thread_current ()->priority)
+            {
+              intr_yield_on_return ();
+            }
         }
     }
 }
