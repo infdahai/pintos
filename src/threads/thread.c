@@ -114,8 +114,11 @@ thread_start (void)
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
+  if (thread_mlfqs)
+    {
+      load_avg = 0;
+    }
 
-  load_avg = 0;
   /* Start preemptive thread scheduling. */
   intr_enable ();
 
@@ -368,13 +371,19 @@ thread_set_priority (int new_priority)
 {
   struct thread *cur_t = thread_current ();
   int old_priority = cur_t->priority;
-  cur_t->base_priority = new_priority;
-
-  if (list_empty (&cur_t->lockhold_lists) || new_priority > cur_t->priority)
+  if (!thread_mlfqs)
     {
-      cur_t->priority = new_priority;
+      cur_t->base_priority = new_priority;
+      if (list_empty (&cur_t->lockhold_lists)
+          || new_priority > cur_t->priority)
+        {
+          cur_t->priority = new_priority;
+        }
     }
-
+  else
+    {
+      thread_current ()->priority = new_priority;
+    }
   if (cur_t->priority < old_priority)
     {
       thread_yield ();
