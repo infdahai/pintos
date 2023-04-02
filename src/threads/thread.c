@@ -97,7 +97,10 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-
+  if (thread_mlfqs)
+    {
+      load_avg = 0;
+    }
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
@@ -114,10 +117,6 @@ thread_start (void)
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
-  if (thread_mlfqs)
-    {
-      load_avg = 0;
-    }
 
   /* Start preemptive thread scheduling. */
   intr_enable ();
@@ -369,24 +368,22 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority)
 {
-  struct thread *cur_t = thread_current ();
-  int old_priority = cur_t->priority;
   if (!thread_mlfqs)
     {
+      struct thread *cur_t = thread_current ();
+      int old_priority = cur_t->priority;
+
       cur_t->base_priority = new_priority;
       if (list_empty (&cur_t->lockhold_lists)
           || new_priority > cur_t->priority)
         {
           cur_t->priority = new_priority;
         }
-    }
-  else
-    {
-      thread_current ()->priority = new_priority;
-    }
-  if (cur_t->priority < old_priority)
-    {
-      thread_yield ();
+
+      if (cur_t->priority < old_priority)
+        {
+          thread_yield ();
+        }
     }
 }
 
@@ -402,8 +399,6 @@ void
 thread_set_nice (int nice UNUSED)
 {
   thread_current ()->nice = nice;
-  mlfqs_update_priority (thread_current (), NULL);
-  thread_yield ();
 }
 
 /** Returns the current thread's nice value. */
@@ -417,14 +412,14 @@ thread_get_nice (void)
 int
 thread_get_load_avg (void)
 {
-  return ftoi_near (fix_mul (load_avg, itof (100)));
+  return ftoi_near (100 * load_avg);
 }
 
 /** Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void)
 {
-  return ftoi_near (fix_mul (thread_current ()->recent_cpu, itof (100)));
+  return ftoi_near (thread_current ()->recent_cpu * 100);
 }
 
 /** Idle thread.  Executes when no other thread is ready to run.
