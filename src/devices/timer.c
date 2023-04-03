@@ -104,12 +104,12 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks)
 {
-  if (ticks <= 0)
+  ASSERT (intr_get_level () == INTR_ON);
+  if (ticks < 0)
     {
       return;
     }
 
-  ASSERT (intr_get_level () == INTR_ON);
   enum intr_level old_level = intr_disable ();
 
   struct sleep_entry *entry
@@ -207,20 +207,23 @@ static void
 sleep_tick (void)
 {
   /** the writing behind is copied from list.c */
-  struct list_elem *e;
+  struct list_elem *e = list_begin (&sleep_list);
 
-  for (e = list_begin (&sleep_list); e != list_end (&sleep_list);
-       e = list_next (e))
+  for (; e != list_end (&sleep_list);)
     {
       struct sleep_entry *entry = list_entry (e, struct sleep_entry, elem);
       if (--(entry->ticks) <= 0)
         {
-          (void)list_remove (e);
+          e = list_remove (e);
           thread_unblock (entry->t);
           if (entry->t->priority > thread_current ()->priority)
             {
               intr_yield_on_return ();
             }
+        }
+      else
+        {
+          e = list_next (e);
         }
     }
 }

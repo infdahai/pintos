@@ -60,6 +60,7 @@ static unsigned thread_ticks; /**< # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
+static bool scheduled_run;
 static fix_point load_avg;
 
 static void kernel_thread (thread_func *, void *aux);
@@ -123,6 +124,7 @@ thread_start (void)
 
   /* Wait for the idle thread to initialize idle_thread. */
   sema_down (&idle_started);
+  scheduled_run = true;
 }
 
 /** Called by the timer interrupt handler at each timer tick.
@@ -197,7 +199,6 @@ thread_create (const char *name, int priority, thread_func *function,
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
   tid_t tid;
-
   ASSERT (function != NULL);
 
   /* Allocate thread. */
@@ -266,8 +267,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_insert_ordered (&ready_list, &t->elem,
-                       (list_less_func *)&thread_priority_greater, NULL);
+  list_insert_ordered (&ready_list, &t->elem, &thread_priority_greater, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -331,6 +331,11 @@ thread_exit (void)
 void
 thread_yield (void)
 {
+  if (!scheduled_run)
+    {
+      return;
+    }
+
   struct thread *cur = thread_current ();
   enum intr_level old_level;
 
@@ -338,8 +343,8 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread)
-    list_insert_ordered (&ready_list, &cur->elem,
-                         (list_less_func *)&thread_priority_greater, NULL);
+    list_insert_ordered (&ready_list, &cur->elem, &thread_priority_greater,
+                         NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -385,6 +390,10 @@ thread_set_priority (int new_priority)
           thread_yield ();
         }
     }
+  else
+    {
+      thread_current ()->priority = new_priority;
+    }
 }
 
 /** Returns the current thread's priority. */
@@ -398,6 +407,7 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice UNUSED)
 {
+  ASSERT (nice >= -20 && nice <= 20);
   thread_current ()->nice = nice;
 }
 
@@ -641,8 +651,13 @@ bool
 thread_priority_greater (const struct list_elem *a, const struct list_elem *b,
                          void *aux UNUSED)
 {
-  return list_entry (a, struct thread, elem)->priority
-         > list_entry (b, struct thread, elem)->priority;
+  int pa = list_entry (a, struct thread, elem)->priority;
+  int pb = list_entry (b, struct thread, elem)->priority;
+  if (pa > pb)
+    {
+      return true;
+    }
+  return false;
 }
 
 static void

@@ -27,6 +27,7 @@
 */
 
 #include "threads/synch.h"
+#include "interrupt.h"
 #include "synch.h"
 #include "thread.h"
 #include "threads/interrupt.h"
@@ -117,7 +118,6 @@ sema_up (struct semaphore *sema)
   enum intr_level old_level;
 
   ASSERT (sema != NULL);
-
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters))
     {
@@ -137,9 +137,13 @@ sema_up (struct semaphore *sema)
     }
   sema->value++;
   intr_set_level (old_level);
-  if (!thread_mlfqs)
+  if (!intr_context ())
     {
       thread_yield ();
+    }
+  else
+    {
+      intr_yield_on_return ();
     }
 }
 
@@ -448,19 +452,21 @@ static bool
 sema_priority_greater (const struct list_elem *a, const struct list_elem *b,
                        void *aux UNUSED)
 {
-  struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
-  struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
+  struct semaphore *sa
+      = &list_entry (a, struct semaphore_elem, elem)->semaphore;
+  struct semaphore *sb
+      = &list_entry (b, struct semaphore_elem, elem)->semaphore;
   int sa_min;
   {
     struct list_elem *e
-        = list_min (&sa->semaphore.waiters, thread_priority_greater, NULL);
+        = list_min (&sa->waiters, thread_priority_greater, NULL);
     struct thread *t = list_entry (e, struct thread, elem);
     sa_min = t->priority;
   }
   int sb_min;
   {
     struct list_elem *e
-        = list_min (&sb->semaphore.waiters, thread_priority_greater, NULL);
+        = list_min (&sb->waiters, thread_priority_greater, NULL);
     struct thread *t = list_entry (e, struct thread, elem);
     sb_min = t->priority;
   }
