@@ -1,5 +1,8 @@
 #include "userprog/syscall.h"
+#include "devices/input.h"
 #include "devices/shutdown.h"
+#include "filesys/file.h"
+#include "filesys/filesys.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -10,12 +13,21 @@
 static void syscall_handler (struct intr_frame *);
 static void syscall_hall (struct intr_frame *);
 static void syscall_exit (struct intr_frame *);
-static void syscall_write (struct intr_frame *);
 static void syscall_wait (struct intr_frame *);
 static void syscall_exec (struct intr_frame *);
+static void syscall_create (struct intr_frame *);
+static void syscall_remove (struct intr_frame *);
+static void syscall_open (struct intr_frame *);
+static void syscall_filesize (struct intr_frame *);
+static void syscall_read (struct intr_frame *);
+static void syscall_write (struct intr_frame *);
+static void syscall_seek (struct intr_frame *);
+static void syscall_tell (struct intr_frame *);
+static void syscall_close (struct intr_frame *);
 
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
+static struct file_entry *get_file (int);
 
 static void *check_read_user_ptr (const void *, size_t);
 static void *check_write_user_ptr (void *, size_t);
@@ -50,8 +62,32 @@ syscall_handler (struct intr_frame *f UNUSED)
     case SYS_WAIT:
       syscall_wait (f);
       break;
+    case SYS_CREATE:
+      syscall_create (f);
+      break;
+    case SYS_REMOVE:
+      syscall_remove (f);
+      break;
+    case SYS_OPEN:
+      syscall_open (f);
+      break;
+    case SYS_FILESIZE:
+      syscall_filesize (f);
+      break;
+    case SYS_READ:
+      syscall_read (f);
+      break;
     case SYS_WRITE:
       syscall_write (f);
+      break;
+    case SYS_SEEK:
+      syscall_seek (f);
+      break;
+    case SYS_TELL:
+      syscall_tell (f);
+      break;
+    case SYS_CLOSE:
+      syscall_close (f);
       break;
     }
 }
@@ -72,20 +108,6 @@ syscall_exit (struct intr_frame *f UNUSED)
 }
 
 static void
-syscall_write (struct intr_frame *f UNUSED)
-{
-  int fd = *(int *)(f->esp + ptr_size);
-  char *buf = *(char **)(f->esp + 2 * ptr_size);
-  int size = *(int *)(f->esp + 3 * ptr_size);
-
-  if (fd == STDOUT_FILENO)
-    {
-      putbuf (buf, size);
-      f->eax = size;
-    }
-}
-
-static void
 syscall_wait (struct intr_frame *f UNUSED)
 {
   int pid = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
@@ -100,6 +122,217 @@ syscall_exec (struct intr_frame *f UNUSED)
   f->eax = process_execute (cmd);
 }
 
+/*
+ * bool create (const char *file, unsigned initial_size)
+ */
+static void
+syscall_create (struct intr_frame *f UNUSED)
+{
+  char *file = *(char **)check_read_user_ptr (f->esp + ptr_size, ptr_size);
+  check_read_user_str (file);
+  unsigned initial_size = *(unsigned *)check_read_user_ptr (
+      f->esp + 2 * ptr_size, sizeof (unsigned));
+
+  lock_acquire (&filesys_lock);
+  f->eax = filesys_create (file, initial_size);
+  lock_release (&filesys_lock);
+}
+
+/*
+ * bool remove (const char *file)
+ */
+static void
+syscall_remove (struct intr_frame *f UNUSED)
+{
+  char *file = *(char **)check_read_user_ptr (f->esp + ptr_size, ptr_size);
+  check_read_user_str (file);
+
+  lock_acquire (&filesys_lock);
+  f->eax = filesys_remove (file);
+  lock_release (&filesys_lock);
+}
+
+/*
+ * int open (const char *file)
+ */
+static void
+syscall_open (struct intr_frame *f UNUSED)
+{
+  char *file = *(char **)check_read_user_ptr (f->esp + ptr_size, ptr_size);
+  check_read_user_str (file);
+
+  lock_acquire (&filesys_lock);
+  struct file *open_file = filesys_open (file);
+  lock_release (&filesys_lock);
+
+  if (open_file == NULL)
+    {
+      f->eax = -1;
+      return;
+    }
+
+  struct thread *cur = thread_current ();
+  struct file_entry *entry = malloc (sizeof (struct file_entry));
+  entry->fd = cur->next_fd++;
+  entry->f = open_file;
+  list_push_back (&cur->file_list, &entry->elem);
+  f->eax = entry->fd;
+}
+
+/*
+ * int filesize (int fd)
+ */
+static void
+syscall_filesize (struct intr_frame *f UNUSED)
+{
+  int fd = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
+  struct file_entry *entry = get_file (fd);
+  if (entry == NULL)
+    {
+      f->eax = -1;
+    }
+  else
+    {
+      lock_acquire (&filesys_lock);
+      f->eax = file_length (entry->f);
+      lock_release (&filesys_lock);
+    }
+}
+
+/*
+ * int read (int fd, void *buffer, unsigned size)
+ */
+static void
+syscall_read (struct intr_frame *f UNUSED)
+{
+  int fd = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
+  void *buf = *(void **)check_read_user_ptr (f->esp + 2 * ptr_size, ptr_size);
+  unsigned size = *(unsigned *)check_read_user_ptr (f->esp + 3 * ptr_size,
+                                                    sizeof (unsigned));
+  check_write_user_ptr (buf, size);
+
+  if (fd == 0)
+    {
+      for (unsigned i = 0; i < size; i++)
+        {
+          *(uint8_t *)buf = input_getc ();
+          buf += sizeof (uint8_t);
+        }
+      f->eax = size;
+      return;
+    }
+  if (fd == 1)
+    {
+      terminate_process ();
+    }
+
+  struct file_entry *entry = get_file (fd);
+  if (entry == NULL)
+    {
+      f->eax = -1;
+    }
+  else
+    {
+      lock_acquire (&filesys_lock);
+      f->eax = file_read (entry->f, buf, size);
+      lock_release (&filesys_lock);
+    }
+}
+
+/*
+ * int write (int fd, const void *buffer, unsigned size)
+ */
+static void
+syscall_write (struct intr_frame *f UNUSED)
+{
+  int fd = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
+  void *buf = *(void **)check_read_user_ptr (f->esp + 2 * ptr_size, ptr_size);
+  unsigned size = *(unsigned *)check_read_user_ptr (f->esp + 3 * ptr_size,
+                                                    sizeof (unsigned));
+  check_read_user_ptr (buf, size);
+
+  if (fd == 0)
+    {
+      terminate_process ();
+    }
+  if (fd == STDOUT_FILENO)
+    {
+      putbuf ((const char *)buf, size);
+      f->eax = size;
+      return;
+    }
+
+  struct file_entry *entry = get_file (fd);
+  if (entry == NULL)
+    {
+      f->eax = -1;
+    }
+  else
+    {
+      lock_acquire (&filesys_lock);
+      f->eax = file_write (entry->f, buf, size);
+      lock_release (&filesys_lock);
+    }
+}
+
+/*
+ * void seek (int fd, unsigned position)
+ */
+static void
+syscall_seek (struct intr_frame *f UNUSED)
+{
+  int fd = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
+  unsigned pos = *(unsigned *)check_read_user_ptr (f->esp + 2 * ptr_size,
+                                                   sizeof (unsigned));
+  struct file_entry *entry = get_file (fd);
+  if (entry != NULL)
+    {
+      lock_acquire (&filesys_lock);
+      file_seek (entry->f, pos);
+      lock_release (&filesys_lock);
+    }
+}
+
+/*
+ * unsigned tell (int fd)
+ */
+static void
+syscall_tell (struct intr_frame *f UNUSED)
+{
+  int fd = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
+
+  struct file_entry *entry = get_file (fd);
+  if (entry == NULL)
+    {
+      f->eax = -1;
+    }
+  else
+    {
+      lock_acquire (&filesys_lock);
+      f->eax = file_tell (entry->f);
+      lock_release (&filesys_lock);
+    }
+}
+
+/*
+ * void close (int fd)
+ */
+static void
+syscall_close (struct intr_frame *f UNUSED)
+{
+  int fd = *(int *)check_read_user_ptr (f->esp + ptr_size, sizeof (int));
+
+  struct file_entry *entry = get_file (fd);
+  if (entry != NULL)
+    {
+      lock_acquire (&filesys_lock);
+      file_close (entry->f);
+      list_remove (&entry->elem);
+      free (entry);
+      lock_release (&filesys_lock);
+    }
+}
+
 static void *
 check_read_user_ptr (const void *ptr, size_t size)
 {
@@ -107,11 +340,14 @@ check_read_user_ptr (const void *ptr, size_t size)
     {
       terminate_process ();
     }
-
-  if (get_user (ptr + size) == -1)
+  if (size >= 1)
     {
-      terminate_process ();
+      if (get_user (ptr + size - 1) == -1)
+        {
+          terminate_process ();
+        }
     }
+
   return (void *)ptr;
 }
 
@@ -122,10 +358,14 @@ check_write_user_ptr (void *ptr, size_t size)
     {
       terminate_process ();
     }
-  if (!put_user (ptr + size, 0))
+  if (size >= 1)
     {
-      terminate_process ();
+      if (!put_user (ptr + size - 1, 0))
+        {
+          terminate_process ();
+        }
     }
+
   return ptr;
 }
 
@@ -178,6 +418,23 @@ put_user (uint8_t *udst, uint8_t byte)
       : "=&a"(error_code), "=m"(*udst)
       : "q"(byte));
   return error_code != -1;
+}
+
+static struct file_entry *
+get_file (int fd)
+{
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  for (e = list_begin (&cur->file_list); e != list_end (&cur->file_list);
+       e = list_next (e))
+    {
+      struct file_entry *entry = list_entry (e, struct file_entry, elem);
+      if (entry->fd == fd)
+        {
+          return entry;
+        }
+    }
+  return NULL;
 }
 
 static void

@@ -2,6 +2,8 @@
 #define THREADS_THREAD_H
 
 #include "devices/timer.h"
+#include "filesys/file.h"
+#include "filesys/filesys.h"
 #include "fixed_point.h"
 #include "malloc.h"
 #include "synch.h"
@@ -27,6 +29,8 @@ typedef int tid_t;
 #define PRI_MIN 0      /**< Lowest priority. */
 #define PRI_DEFAULT 31 /**< Default priority. */
 #define PRI_MAX 63     /**< Highest priority. */
+
+struct child_entry;
 
 /** A kernel thread or user process.
 
@@ -118,8 +122,22 @@ struct thread
   int exit_status; /* current thread's exit code. */
   bool success;    /* Judge whehter the child's thread execute successfully */
 
+  struct file *exec_file;
+  /**< The executable file loaded by the thread. Opened upon*/
+  struct list
+      file_list; /**< Files opened by the thread. Member type is file_entry. */
+  int next_fd;   /**< Next file descriptor to be allocated.
+                                             Start from 2 (0=STDIN, 1=STDOUT). */
+
   /* Owned by thread.c. */
   unsigned magic; /**< Detects stack overflow. */
+};
+
+struct file_entry
+{
+  int fd;
+  struct file *f;
+  struct list_elem elem;
 };
 
 struct child_entry

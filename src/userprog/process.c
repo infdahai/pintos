@@ -121,6 +121,12 @@ start_process (void *file_name_)
       if_.esp -= ptr_size;
       memset (if_.esp, 0, ptr_size);
 
+      lock_acquire (&filesys_lock);
+      struct file *open_file = filesys_open (proc_name);
+      file_deny_write (open_file);
+      lock_release (&filesys_lock);
+      thread_current ()->exec_file = open_file;
+
       thread_current ()->parent->success = true;
       sema_up (&thread_current ()->parent->sema_exec);
 
@@ -196,6 +202,11 @@ process_exit (void)
   uint32_t *pd;
 
   printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
+
+  lock_acquire (&filesys_lock);
+  file_close (cur->exec_file);
+  lock_release (&filesys_lock);
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;

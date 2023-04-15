@@ -330,6 +330,16 @@ thread_exit (void)
   struct thread *cur = thread_current ();
 
   struct list_elem *e;
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);)
+    {
+      e = list_pop_front (&cur->file_list);
+      struct file_entry *entry = list_entry (e, struct file_entry, elem);
+      lock_acquire (&filesys_lock);
+      file_close (entry->f);
+      lock_release (&filesys_lock);
+      free (entry);
+    }
+
   for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
        e = list_next (e))
     {
@@ -576,6 +586,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->exit_status = 0;
   t->success = false;
   list_init (&t->child_list);
+  list_init (&t->file_list);
+  t->next_fd = 2;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
