@@ -1,5 +1,6 @@
 #include "threads/thread.h"
 #include "fixed_point.h"
+#include "synch.h"
 #include "thread.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
@@ -210,6 +211,17 @@ thread_create (const char *name, int priority, thread_func *function,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 
+  t->childs = malloc (sizeof (struct child_entry));
+  t->childs->tid = tid;
+  t->childs->t = t;
+  t->childs->is_alive = true;
+  t->childs->exit_status = 0;
+  t->childs->is_waiting_on = false;
+  sema_init (&t->childs->wait_sema, 0);
+
+  t->parent = thread_current ();
+  list_push_back (&t->parent->child_list, &t->childs->elem);
+
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
@@ -315,13 +327,41 @@ thread_exit (void)
 #ifdef USERPROG
   process_exit ();
 #endif
+  struct thread *cur = thread_current ();
+
+  struct list_elem *e;
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
+       e = list_next (e))
+    {
+      struct child_entry *entry = list_entry (e, struct child_entry, elem);
+      if (entry->is_alive)
+        {
+          entry->t->parent = NULL;
+        }
+    }
+
+  if (cur->parent == NULL)
+    {
+      free (cur->childs);
+    }
+  else
+    {
+      // wait()
+      cur->childs->exit_status = cur->exit_status;
+      if (cur->childs->is_waiting_on)
+        {
+          sema_up (&cur->childs->wait_sema);
+        }
+      cur->childs->is_alive = false;
+      cur->childs->t = NULL;
+    }
 
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
-  list_remove (&thread_current ()->allelem);
-  thread_current ()->status = THREAD_DYING;
+  list_remove (&cur->allelem);
+  cur->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
 }
@@ -531,6 +571,11 @@ init_thread (struct thread *t, const char *name, int priority)
     }
 
   t->magic = THREAD_MAGIC;
+
+  sema_init (&t->sema_exec, 0);
+  t->exit_status = 0;
+  t->success = false;
+  list_init (&t->child_list);
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

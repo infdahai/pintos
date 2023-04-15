@@ -3,6 +3,7 @@
 
 #include "devices/timer.h"
 #include "fixed_point.h"
+#include "malloc.h"
 #include "synch.h"
 #include <debug.h>
 #include <list.h>
@@ -108,8 +109,30 @@ struct thread
   uint32_t *pagedir; /**< Page directory. */
 #endif
 
+  struct thread *parent;
+  struct list child_list;
+  struct child_entry *childs;
+
+  struct semaphore
+      sema_exec;   /* Semaphore for executing (spawning) a new process. */
+  int exit_status; /* current thread's exit code. */
+  bool success;    /* Judge whehter the child's thread execute successfully */
+
   /* Owned by thread.c. */
   unsigned magic; /**< Detects stack overflow. */
+};
+
+struct child_entry
+{
+  tid_t tid;
+  struct thread
+      *t; /**< Pointer to child thread. Set to NULL when no longer alive. */
+  bool is_alive; /**< Whether the child is still alive (not exited). */
+  int exit_status;
+  bool is_waiting_on; /**< Whether the parent is waiting on the child. */
+  struct semaphore
+      wait_sema; /**<0 Semaphore to let parent wait on the child. */
+  struct list_elem elem;
 };
 
 /** If false (default), use round-robin scheduler.
