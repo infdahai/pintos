@@ -330,7 +330,7 @@ thread_exit (void)
   struct thread *cur = thread_current ();
 
   struct list_elem *e;
-  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);)
+  while (!list_empty (&cur->file_list))
     {
       e = list_pop_front (&cur->file_list);
       struct file_entry *entry = list_entry (e, struct file_entry, elem);
